@@ -7,7 +7,7 @@
 - client.cc：客户端示例代码
 - bs_ipc_msg.h：消息定义  
 #### 编译过程
-0. 安装 gflags
+0. 安装 gflags,gperftools
 1. 下载并编译 spdk-21.01.1，安装 spdk 附带的 intel-isal 库。
 2. 按需修改 Makefile 里的 spdk 路径
 3. make
