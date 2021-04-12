@@ -191,24 +191,10 @@ struct reactor_t {
         // }
 
         sprintf(rname,"bs_%d_bg_task",cpu);
-        bg_task_cache = rte_mempool_create(rname, MAX_RPC_BURST*4-1 , 64u , MAX_RPC_BURST , 0 , NULL ,NULL, NULL, NULL, SOCKET_ID_ANY , 0);
+        bg_task_cache = rte_mempool_create(rname, MAX_RPC_BURST * 4 -1 , 64u , MAX_RPC_BURST , 0 , NULL ,NULL, NULL, NULL, SOCKET_ID_ANY , 0);
         assert(bg_task_cache);
+ 
 
-        // bg_task_local_cache = std::vector<bg_task>(256);
-
-        // sprintf(rname,"bs_%d_smp",cpu);
-        // small_buffers = rte_mempool_create(rname, 4096 , 4 * 1024, 0 , 0 , NULL ,NULL, NULL, NULL, SOCKET_ID_ANY , 0);
-        // assert(small_buffers);
-
-        // sprintf(rname,"bs_%d_mmp",cpu);
-        // middle_buffers = rte_mempool_create(rname, 512 , 16 * 1024 , 0 , 0 , NULL ,NULL, NULL, NULL, SOCKET_ID_ANY , 0);
-        // assert(middle_buffers);
-
-        // sprintf(rname,"bs_%d_lmp",cpu);
-        // large_buffers = rte_mempool_create(rname, 512 , 64 * 1024 , 0 , 0 , NULL ,NULL, NULL, NULL, SOCKET_ID_ANY , 0);
-        // assert(large_buffers);
-
-        // clients(1024);
         poll_current_client = UINT64_MAX;
         active.store(REACTOR_READY);
     }
@@ -265,6 +251,15 @@ static void reactor_ctrl_msg_handler(reactor_t *rctx, void *msg) {
         rctx->clients.insert({cid, sess} );
         fprintf(stdout , "Add new client session :%016lu\n", cid);
         
+        fprintf(stdout , "Handshake: msg_q=%p,msg_cache=%p,sq=%p,cq=%p\n", 
+            msg_q, msg_cache , sq, cq);
+        if(1) {
+
+            char name[32];
+            sprintf(name , "cli_%lu_msgq", cid);
+            assert(rte_ring_lookup(name) == msg_q);
+        }
+
         do {
             rte_mempool_get(msg_cache, (void**)&cps);
         } while (!cps);
@@ -445,21 +440,24 @@ static void reactor_inplace_send_reponse(reactor_t *rctx , const ipc_session_t* 
     if(base->msg_type == WRITE_REQUEST) {
         write_chunk_request *wr = (write_chunk_request*)base;
         write_chunk_response*wc =  NULL ;
-        rte_mempool_get(client->msg_cache, (void**)&wc);
+        if(rte_mempool_get(client->msg_cache, (void**)&wc)) {
+            assert(false);
+        }
         memcpy(&wc->base,&wr->base,sizeof(*base));
         wc->base.msg_type = WRITE_RESPONSE;
         wc->base.header_len = sizeof(*wc);
         std::swap(wc->base.src_id,wc->base.to_id);
-
         rte_ring_enqueue(client->cq,wc);
     } else if(base->msg_type == READ_REQUEST) {
         read_chunk_request *rr = (read_chunk_request*)base;
         read_chunk_response*rc =  NULL ;
+        if(rte_mempool_get(client->msg_cache, (void**)&rc)) {
+            assert(false);
+        }
         memcpy(&rc->base,&rr->base,sizeof(*base));
         rc->base.msg_type = READ_RESPONSE;
         rc->base.header_len = sizeof(*rc);
         std::swap(rc->base.src_id,rc->base.to_id);
-
         rte_ring_enqueue(client->cq,rc);
     } else {
 

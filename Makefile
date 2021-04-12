@@ -101,7 +101,7 @@ LINK_CPP_SHARED_LIB=\
 
 
 
-ALL = a.out b.out
+ALL = a.out b.out fio_plugin
 
 .PHONY: all clean 
 
@@ -112,7 +112,8 @@ a.out : main.o
 	$(LINK_CPP_APP)
 b.out : client.o
 	$(LINK_CPP_APP)
-
+fio_plugin:fio_plugin.o
+	$(LINK_C_SHARED_LIB) 
 # 	echo $(SPDK_DIR)
 # 	echo $(C_SRCS)
 # 	echo $(CFLAGS)
