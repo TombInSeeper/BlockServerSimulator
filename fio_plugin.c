@@ -230,10 +230,8 @@ struct spdk_fio_request {
 
 static int g_td_count;
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
-// static bool g_error;
 
 static uint64_t g_thread_id_seq = 1;
-// static uint64_t g_bs_session_id_seq;
 
 struct spdk_fio_qpair {
 	struct fio_file			*f;
@@ -338,19 +336,7 @@ static int spdk_fio_setup(struct thread_data *td)
 	assert(fio_thread->fio_req_pool);
 	
 	for_each_file(td, f, i) {
-		// struct spdk_fio_qpair *qpair = calloc( 1 ,sizeof(struct spdk_fio_qpair));
-		// assert(qpair);
-		// qpair->f = f;
-		// qpair->bs = calloc(1, sizeof(struct bs_target_session));
-		// f->engine_data = qpair; 
 
-		// bs_target_session_init(qpair->bs , fio_thread->tid *1000 + i );
-		// rc = bs_target_session_connect(qpair->bs , f->file_name);
-		// if(rc) {
-		// 	return 1;
-		// }
-
-		// TAILQ_INSERT_TAIL(&fio_thread->fio_qpair, qpair , link );
 	}
 
 	pthread_mutex_lock(&g_mutex);
@@ -388,7 +374,6 @@ static void spdk_fio_cleanup(struct thread_data *td)
 	}
 	pthread_mutex_unlock(&g_mutex);
 }
-
 
 static int spdk_fio_open(struct thread_data *td, struct fio_file *f)
 {

@@ -29,12 +29,15 @@ extern "C" {
 #include <queue>
 #include <random>
 #include <assert.h>
+#include <stack>
 
 DEFINE_string(cpumask,"0x10","bs reactors CPU mask");
 DEFINE_uint32(shmid, 1, "DPDK Share Memory Id");
 DEFINE_int32(max_inplace_size , 32768 , " -1 代表全部请求就地处理 / 0 代表全部请求后台处理/ 其他代表 size ");
 DEFINE_bool(force_inplace, false, "强制先小后大就地处理，此标记将覆盖 max_inplace_size");
-DEFINE_bool(dry_run, false , "用于一些额外基准测试，per-core performance");
+DEFINE_bool(dry_run, false , " 基准测试");
+DEFINE_string(dry_run_type, "malloc" , " crc /malloc 基准测试");
+DEFINE_uint32(dry_run_bs, 4 , "数据块长度(4~128)");
 DEFINE_bool(fake_exe, true , "用固定延迟模拟请求处理");
 DEFINE_bool(force_fifo, false , "强制FIFO处理，此标记将覆盖 force_inplace 和 max_inplace_size");
 
@@ -320,26 +323,6 @@ struct bg_task {
     };
 };
 
-// static void* reactor_alloc_buffer(reactor_t *rctx , uint32_t length) {
-//     char *copy_wbuf = NULL;
-
-//     // uint32_t i = rte_log2_u32(length) - 12;
-//     // if(i < 6) {
-//     //     int rc = rte_mempool_get(rctx->buffers[i] , (void**)&copy_wbuf);
-//     //     assert(rc == 0);
-//     // } ;
-//     return copy_wbuf;
-// }
-// static void reactor_free_buffer(reactor_t *rctx , void*buf , uint32_t length) {
-//     // if(!buf) {
-//     //     return;
-//     // }
-//     // uint32_t i = rte_log2_u32(length) - 12;
-//     // do {
-//     //     rte_mempool_put(rctx->buffers[i] , buf);
-//     // } while(0);
-// }
-
 static void reactor_inplace_execute_write_request(reactor_t *rctx , struct write_chunk_request *wr ) 
 {
     if(FLAGS_fake_exe) {
@@ -411,30 +394,6 @@ static void reactor_inplace_execute_read_request(reactor_t *rctx , struct read_c
     rctx->metrics.tsc_execute_writes += (e-s);
 };
 
-// static void* reactor_inplace_make_reponse(reactor_t *rctx , const ipc_session_t* client , void *request) {
-//     msg_base *base = (msg_base*)request;
-//     if(base->msg_type == WRITE_REQUEST) {
-//         write_chunk_request *wr = (write_chunk_request*)base;
-//         write_chunk_response*wc =  NULL ;
-//         rte_mempool_get(client->msg_cache, (void**)&wc);
-//         memcpy(&wc->base,&wr->base,sizeof(*base));
-//         wc->base.msg_type = WRITE_RESPONSE;
-//         wc->base.header_len = sizeof(*wc);
-//         std::swap(wc->base.src_id,wc->base.to_id);
-//         return wc;
-//     } else if(base->msg_type == READ_REQUEST) {
-//         read_chunk_request *rr = (read_chunk_request*)base;
-//         read_chunk_response*rc =  NULL ;
-//         memcpy(&rc->base,&rr->base,sizeof(*base));
-//         rc->base.msg_type = READ_RESPONSE;
-//         rc->base.header_len = sizeof(*rc);
-//         std::swap(rc->base.src_id,rc->base.to_id);
-//         return rc;
-//     } else {
-
-//     }
-//     return NULL;
-// };
 static void reactor_inplace_send_reponse(reactor_t *rctx , const ipc_session_t* client , void *request) {
     msg_base *base = (msg_base*)request;
     if(base->msg_type == WRITE_REQUEST) {
@@ -513,38 +472,6 @@ static int reactor_poll_bg_task_done_queue(reactor_t *rctx) {
    return total;
 }
 
-// static int reactor_poll_global_bg_task_queue(reactor_t *rctx) {
-
-//     rte_ring *tq = g_bg_task_queue;   
-//     // rte_ring *tq = g_bg_task_queue;    
-//     void* task = NULL;
-
-//     uint64_t s, e ; 
-//     s = rte_rdtsc();
-//     int rc = rte_ring_dequeue(tq, &task);
-//     if(rc) {
-//         e = rte_rdtsc();
-//         rctx->metrics.tsc_others_bt_deq_raw += (e-s);
-//         return 0;
-//     }
-//     // fprintf(stdout, "Steal successfully\n");
-//     e = rte_rdtsc();
-//     rctx->metrics.tsc_others_bt_deq += (e-s);
-//     rctx->metrics.nr_others_requests++;
-    
-//     reactor_inplace_execute_request(rctx , (void*)((bg_task*)task)->request_msg_ptr);
-    
-    
-//     msg_base *base = (msg_base*)(void*)((bg_task*)task)->request_msg_ptr;
-//     rte_ring *tdq = bg_task_done_queue_lookup(base->to_id);
-    
-    
-//     rte_ring_enqueue(tdq, task);
-    
-//     return 1;
-
-
-// }
 
 static int reactor_poll_others_bg_task_queue(reactor_t *rctx, uint32_t neighbor) {
 
@@ -812,44 +739,157 @@ static double get_us() {
     return 1e6 *((double) rte_rdtsc_precise() / (double)rte_get_tsc_hz());
 } 
 
+struct dry_run_context {
+    char *input_mem;
+    char* out_mem;
+    char *out_crc_arr;
+    dry_run_context(uint32_t pack_size) {
+        input_mem = (char *)spdk_dma_zmalloc(pack_size, 0x1000 , NULL);
+        out_mem = (char *)spdk_dma_zmalloc(pack_size, 0x1000 , NULL);
+        out_crc_arr = (char *)spdk_dma_zmalloc( (pack_size / 0x1000) * 4 , 0 , NULL);
 
-uint64_t random_buffer_size = 1024ul << 20;
-void *randomrized_buffer = NULL;
+        assert((input_mem) && (out_mem) && (out_crc_arr));
+    }
+    ~dry_run_context() {
+        spdk_free(out_crc_arr);
+        spdk_free(out_mem);
+        spdk_free(input_mem);
+    }
+};
+
+class user_allocator {
+    void *base_;   
+    uint64_t alloc_size_;
+    uint64_t n_;
+    std::stack<void*> allocator_;
+public:
+    user_allocator(void*base , uint64_t alloc_size , uint64_t n): 
+        base_(base), alloc_size_(alloc_size), n_(n) {
+            for(uint64_t i = 0 ; i < n ; ++i) {
+                allocator_.push( (char*)base_ + (n - i - 1) * alloc_size_);
+            }
+    }
+
+    ~user_allocator() = default;
+
+    void* alloc() {
+        if(unlikely(allocator_.empty())) {
+            return NULL;
+        }
+        void* x = allocator_.top();
+        allocator_.pop();
+        return x;
+    }
+
+    void free(void* m) {
+        if(!m) {
+            return;
+        }
+        allocator_.push(m);
+        return;
+    }
+
+};
+
+static std::atomic<int> g_dry_run_start = {0};
 
 static void* dry_run(void* ctx)  {
-
-    assert(randomrized_buffer);
-
+    dry_run_context * drctx = (dry_run_context*)ctx;
     // rte_mempool
     std::default_random_engine rde; 
 
+    uint64_t total_length = 128ull << 30;
 
-    uint64_t length = 128ul << 10;
-    uint64_t count = 20000;
-    uint64_t loop = count;
     double s, e ;
-    s = get_us();
-    while(loop--) {
-        char *x = (char *)randomrized_buffer + (rde() % (random_buffer_size/ length)) * length;
-        // char *cb =(char*) spdk_dma_zmalloc(128u << 10 ,0x1000,NULL);
-        char cb[length];
-
-        uint64_t m = spdk_crc32c_update(x , length , 0);
-        (void)m;
-        memcpy(cb , x , length);
-
-        // spdk_free(cb);
-        // rte_mb();
+    char*in = drctx->input_mem;
+    for(uint64_t i = 0 ; i < (FLAGS_dry_run_bs<<10) ; ++i) {
+        memset(&in[i], rde() % 255,1);
     }
-    e = get_us();
+    char *out = drctx->out_mem;
+    char *out_crc = drctx->out_crc_arr;
 
-    printf("IOPS=%lf K , avg_lat=%lf us \n" , 
-        (double)(count*1000.0) / (double)(e-s),
-        (double)(e-s) / count );
-    // 15 * 16 = 24
-    // spdk_free(randomrized_buffer);
-    // spdk_mempool_free(sp);
-    
+
+    while(g_dry_run_start.load() == 0)
+        ;
+
+    if(!strcmp(FLAGS_dry_run_type.c_str(),"crc")) {
+        uint64_t loop = total_length / (FLAGS_dry_run_bs<<10) ;
+        uint64_t count = loop;
+        s = get_us();
+        while(loop--) {
+            uint64_t nseg = FLAGS_dry_run_bs / 4; 
+            for(uint64_t i = 0 ;  i < nseg ; ++i) {
+                out_crc[i] = spdk_crc32c_update(in + i * 0x1000 , 0x1000 , 0xffffffff );
+            }
+            // memcpy(out , in , (FLAGS_dry_run_bs<<10));
+        }
+        e = get_us();
+        double t = e - s ;
+        double bw = ((double)(total_length>>30)) / (t/1e6); 
+        double lat =(t) / (double)count ;
+
+        printf("Run time=%lf s , Total length = %lu GiB , bw = %lf GiB/s , avg_lat = %.9lf us for %u K\n", 
+            t/1e6,
+            total_length >> 30, 
+            bw , lat , 
+            FLAGS_dry_run_bs);
+    } else if ((!strcmp(FLAGS_dry_run_type.c_str(),"gmalloc"))) {
+        if(1) {
+            printf("Testing malloc performance(glibc malloc)\n");
+            uint64_t total_length = 128ull << 20; // 32MiB
+            uint64_t n = (total_length / (FLAGS_dry_run_bs<<10)) ;
+            char *bufs[n];
+            uint64_t loop = 1024;
+            uint64_t count = loop * n;
+            s = get_us();
+            while(loop--) {
+                for(uint64_t i = 0 ;  i < n ; ++i) {
+                    bufs[i] = (char*)malloc( (FLAGS_dry_run_bs<<10));
+                    // memset(bufs[i],0,(FLAGS_dry_run_bs<<10));
+                }
+                for(uint64_t i = 0 ; i < n ; ++i ) {
+                    free(bufs[i]);
+                }
+            }
+            e = get_us();
+            double t = e - s ;
+            double lat = (t) / (double)count ;
+            printf("Run time=%lf s , (alloc+free)avg_lat = %.9lf us for %u KiB\n", 
+                t/1e6,  lat , 
+                FLAGS_dry_run_bs);
+            }
+    } else if (!strcmp(FLAGS_dry_run_type.c_str(),"user_malloc"))  {
+        if(1) {
+            printf("Testing malloc performance (use user allocator)\n");
+            uint64_t total_length = 128ull << 20; // 32MiB
+            uint64_t n = (total_length / (FLAGS_dry_run_bs<<10)) ;
+            char *mem = (char*)spdk_dma_zmalloc(total_length , 0x1000 , NULL);
+            user_allocator alloc((void*)mem,(FLAGS_dry_run_bs<<10),n);
+
+            char *bufs[n];
+            uint64_t loop = 1024;
+            uint64_t count = loop * n;
+            s = get_us();
+            while(loop--) {
+                for(uint64_t i = 0 ;  i < n ; ++i) {
+                    bufs[i] = (char*)alloc.alloc();
+                    // memset(bufs[i],0,(FLAGS_dry_run_bs<<10));
+                }
+                for(uint64_t i = 0 ; i < n ; ++i ) {
+                    alloc.free(bufs[i]);
+                }
+            }
+            e = get_us();
+            double t = e - s ;
+            double lat =(t) / (double)count ;
+            printf("Run time=%lf s , (alloc+free)avg_lat = %.9lf us for %u KiB\n", 
+                t/1e6,  lat , 
+                FLAGS_dry_run_bs);
+            spdk_free(mem);
+        }
+
+        
+    }
     return NULL;
 };
 
@@ -883,25 +923,37 @@ int main(int argc , char **argv) {
 
     int rc = spdk_env_init(&opts);
     if(FLAGS_dry_run) {
-        randomrized_buffer = spdk_zmalloc( random_buffer_size , 0x1000, NULL , SPDK_ENV_SOCKET_ID_ANY ,SPDK_MALLOC_SHARE| SPDK_MALLOC_DMA );
 
         unsigned i = 0;
         std::vector<pthread_t> pt;
+        std::vector<dry_run_context*> drt;
+        SPDK_ENV_FOREACH_CORE(i) {
+
+        }
+
+
         SPDK_ENV_FOREACH_CORE(i) {
             pthread_attr_t attr;
             pthread_attr_init(&attr);
-            pthread_attr_setstacksize(&attr , 32ul << 20);
             cpu_set_t c;
             CPU_ZERO(&c);
             CPU_SET(i,&c);
             pthread_attr_setaffinity_np(&attr,sizeof(c),&c);
             pthread_t p;
-            pthread_create(&p , &attr , dry_run , NULL);
+            dry_run_context* dr = new dry_run_context(FLAGS_dry_run_bs << 10);
+            pthread_create(&p , &attr , dry_run , dr);
             pt.push_back(p);
+            drt.push_back(dr);
+
         }
         sleep(1);
+        g_dry_run_start.store(1);
         for(auto p : pt) {
             pthread_join(p , NULL);
+        }
+
+        for(auto dp : drt) {
+            delete dp;
         }
 
         spdk_env_fini();
