@@ -36,7 +36,7 @@ DEFINE_uint32(shmid, 1, "DPDK Share Memory Id");
 DEFINE_int32(max_inplace_size , 32768 , " -1 代表全部请求就地处理 / 0 代表全部请求后台处理/ 其他代表 size ");
 DEFINE_bool(force_inplace, false, "强制先小后大就地处理，此标记将覆盖 max_inplace_size");
 DEFINE_bool(dry_run, false , " 基准测试");
-DEFINE_string(dry_run_type, "malloc" , " crc /malloc 基准测试");
+DEFINE_string(dry_run_type, "gmalloc" , "crc/gmalloc/user_malloc 基准测试");
 DEFINE_uint32(dry_run_bs, 4 , "数据块长度(4~128)");
 DEFINE_bool(fake_exe, true , "用固定延迟模拟请求处理");
 DEFINE_bool(force_fifo, false , "强制FIFO处理，此标记将覆盖 force_inplace 和 max_inplace_size");
